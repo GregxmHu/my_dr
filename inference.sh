@@ -5,13 +5,14 @@ export OMP_NUM_THREADS=1
 model=$1
 pooling=$2
 datasets=$3
-epoch=$4
+round=$4
+stage=$5
 identifier="${model}_${pooling}-pooling_${datasets}"
 project_path="/data/home/scv0540/run/my_dr"
 cache_folder="/data/home/scv0540/run/pretrained_models/"
 data_folder="${project_path}/datasets/${datasets}/"
 checkpoint_save_folder="${project_path}/checkpoints/${identifier}/"
-model_name_or_path="${checkpoint_save_folder}/epoch_${epoch}/"
+model_name_or_path="${checkpoint_save_folder}/round${round}-stage${stage}/"
 results_save_folder="${project_path}/results/${identifier}/"
 #dev_corpus_embedding_path="${project_path}/corpus_embeddings/${identifier}_dev.txt"
 test_corpus_embedding_path="${project_path}/corpus_embeddings/${identifier}_test.txt"
@@ -36,6 +37,7 @@ accelerate launch\
  --corpus_chunk_size 200000\
  --model_name_or_path ${model_name_or_path}\
  --pooling $pooling\
- --epoch $epoch\
+ --round $round\
+ --stage $stage\
  --seed 13\
  --use_pre_trained_model\

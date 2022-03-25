@@ -24,7 +24,7 @@ import torch.distributed as dist
 import tempfile
 from distutils.dir_util import copy_tree
 from accelerate import Accelerator
-
+from torch.utils.tensorboard import SummaryWriter
 from . import __MODEL_HUB_ORGANIZATION__
 from .evaluation import SentenceEvaluator
 from .util import import_from_string, batch_to_device, fullname, snapshot_download, mismatched_sizes_all_gather
@@ -633,7 +633,9 @@ class SentenceTransformer(nn.Sequential):
             #checkpoint_save_steps: int = 500,
             #checkpoint_save_total_limit: int = 0,
             accelerator: Accelerator = None,
-            log_wandb = False
+            tb: SummaryWriter =None,
+            round: int =0,
+            stage: int = 0
             ):
         """
         Train the model with the given training objective
@@ -665,10 +667,6 @@ class SentenceTransformer(nn.Sequential):
         :param checkpoint_save_total_limit: Total number of checkpoints to store
         :param accelerator: Allows you to pass your own accelerator object defined beforehand.
         """
-
-        if log_wandb and accelerator.is_main_process:
-            import wandb
-            wandb.init()
 
         # replacing mutable arguments
         if optimizer_params is None:
@@ -791,8 +789,10 @@ class SentenceTransformer(nn.Sequential):
                             global_step += 1
                         training_steps += 1
                     
-                    if log_wandb and accelerator.is_main_process:
-                        wandb.log({"loss": loss_value})
+                    dist.barrier()
+                    if tb and training_steps % gradient_accumulation == 0:
+                        tb.add_scalar("loss",loss_value.item(),global_step+1)
+                    dist.barrier()
 
                 #if evaluation_steps > 0 and global_step % evaluation_steps == 0:
                 #    self._eval_during_training(evaluator, checkpoint_path, save_best_model, epoch, global_step, callback,
@@ -805,10 +805,10 @@ class SentenceTransformer(nn.Sequential):
                 #if checkpoint_path is not None and checkpoint_save_steps is not None and checkpoint_save_steps > 0 \
                 #        and global_step % checkpoint_save_steps == 0 and accelerator.is_main_process:
                 #    self._save_checkpoint(checkpoint_path, checkpoint_save_total_limit, global_step)
-            dist.barrier()
-            if accelerator.is_main_process:
-                self._save_checkpoint(checkpoint_save_folder, epoch)
-            dist.barrier()
+        dist.barrier()
+        if accelerator.is_main_process:
+            self._save_checkpoint(checkpoint_save_folder, round,stage)
+        dist.barrier()
             #self._eval_during_training(evaluator, output_path, save_best_model, epoch, -1, callback,
             #                            main_process=accelerator.is_main_process)
 
@@ -851,15 +851,15 @@ class SentenceTransformer(nn.Sequential):
     #                self.save(os.path.join(checkpoint_path,"best_model"))
     #        dist.barrier()
 
-    def _save_checkpoint(self, checkpoint_save_folder, epoch):
+    def _save_checkpoint(self, checkpoint_save_folder, round,stage):
         # Store new checkpoint
         if not os.path.exists(checkpoint_save_folder):
             os.mkdir(checkpoint_save_folder)
-        checkpoint_save_path=os.path.join(checkpoint_save_folder, "epoch_{}".format(epoch))
+        checkpoint_save_path=os.path.join(checkpoint_save_folder, "round{}-stage{}".format(round,stage))
         self.save(checkpoint_save_path)
         map_path=os.path.join(checkpoint_save_folder,"checkpoint_path.tsv")
         with open(map_path,'a') as f:
-            f.write("epoch_{}\tpath:{}\n".format(epoch,checkpoint_save_path))
+            f.write("{}\t{}\t{}\n".format(round,stage,checkpoint_save_path))
         # Delete old checkpoints
         #if checkpoint_save_total_limit is not None and checkpoint_save_total_limit > 0:
         #    old_checkpoints = []

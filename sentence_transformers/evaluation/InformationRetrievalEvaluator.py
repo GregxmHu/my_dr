@@ -64,7 +64,7 @@ class InformationRetrievalEvaluator(SentenceEvaluator):
                  accelerator: Accelerator = None,
                  corpus_embedding_path: str="/data/private/huxiaomeng/sgpt/corpus_embeddings/msmarco_small.txt",
                  results_save_folder: str=None,
-                 score_path: str="/data/private/huxiaomeng/sgpt/corpus_embeddings/sgpt-125M-scifact_topk_score.txt"
+                 score_path: str="/data/private/huxiaomeng/sgpt/corpus_embeddings/sgpt-125M-scifact_topk_score.txt",
                  ):
         self.score_path=score_path
         self.corpus_chunk_size=corpus_chunk_size
@@ -72,7 +72,6 @@ class InformationRetrievalEvaluator(SentenceEvaluator):
         self.corpus_embedding_path=corpus_embedding_path
         self.results_save_folder=results_save_folder
         self.queries_ids = []
-        
         for qid in queries:
             if qid in relevant_docs and len(relevant_docs[qid]) > 0:
                 self.queries_ids.append(qid)
@@ -111,7 +110,7 @@ class InformationRetrievalEvaluator(SentenceEvaluator):
             name = "_" + name
 
         self.csv_file: str = name + "_results.csv"
-        self.csv_headers = ["epoch"]
+        self.csv_headers = ["round","stage"]
 
         for score_name in self.score_function_names:
             #for k in accuracy_at_k:
@@ -128,12 +127,12 @@ class InformationRetrievalEvaluator(SentenceEvaluator):
                 self.csv_headers.append("{}-NDCG@{}".format(score_name, k))
 
             #for k in map_at_k:
-                self.csv_headers.append("{}-MAP@{}".format(score_name, k))
+            #    self.csv_headers.append("{}-MAP@{}".format(score_name, k))
 
-    def __call__(self, model,  epoch: int = -1,  num_proc: int = None, *args, **kwargs) -> float:
-        logger.info("Information Retrieval Evaluation on " + self.name + " dataset" + " after epoch {}:".format(epoch))
+    def __call__(self, model,  round: int = 1,stage: int =1,  num_proc: int = None, *args, **kwargs) -> float:
+        logger.info("Information Retrieval Evaluation on " + self.name + " dataset" + " after round {} stage {}".format(round,stage))
 
-        self.compute_metrices(model,epoch=epoch, *args, num_proc=num_proc, **kwargs)
+        self.compute_metrices(model,round=round,stage=stage, *args, num_proc=num_proc, **kwargs)
         #return score
 
         #if self.main_score_function is None:
@@ -141,7 +140,7 @@ class InformationRetrievalEvaluator(SentenceEvaluator):
         #else:
         #    return scores[self.main_score_function]['map@k'][max(self.map_at_k)]
 
-    def compute_metrices(self, model, corpus_model = None, corpus_embeddings: Tensor = None, num_proc: int = None,epoch: int=-1) -> Dict[str, float]:
+    def compute_metrices(self, model, corpus_model = None, corpus_embeddings: Tensor = None, num_proc: int = None,round: int = 1,stage: int =1) -> Dict[str, float]:
         if corpus_model is None:
             corpus_model = model
         #model,corpus_model=self.accelerator.prepare(model,corpus_model)
@@ -189,7 +188,8 @@ class InformationRetrievalEvaluator(SentenceEvaluator):
                             #    }
                             #    )
                             did=batch_ids[id]
-                            f.write(str(query_itr)+'\t'+did+'\t'+name+'\t'+str(score)+'\n')
+                            qid=self.queries_ids[query_itr]
+                            f.write(str(query_itr)+'\t'+qid+'\t'+did+'\t'+name+'\t'+str(score)+'\n')
 
         logger.info("Corpus: {}\n".format(len(self.corpus)))
             
@@ -254,7 +254,7 @@ class InformationRetrievalEvaluator(SentenceEvaluator):
             with open(self.score_path,'r') as f:
                 for item in f:
                     pair_score=item.strip('\n').split('\t')
-                    query_itr,did,name,score=eval(pair_score[0]),pair_score[1],pair_score[2],eval(pair_score[3])
+                    query_itr,did,name,score=eval(pair_score[0]),pair_score[2],pair_score[3],eval(pair_score[4])
                     queries_result_list[name][query_itr].append(
                                 {   'corpus_id': did, 
                                     'score': score
@@ -306,7 +306,7 @@ class InformationRetrievalEvaluator(SentenceEvaluator):
                 else:
                     fOut = open(csv_path, mode="a", encoding="utf-8")
 
-                output_data = [epoch]
+                output_data = [round,stage]
                 for name in self.score_function_names:
                     #for k in self.accuracy_at_k:
                     #    output_data.append(scores[name]['accuracy@k'][k])
@@ -329,6 +329,8 @@ class InformationRetrievalEvaluator(SentenceEvaluator):
                 fOut.close()
             #return scores
             #return scores['ndcg@k'][10]
+            #create next stage's qrels_file_path:
+
         #return None
 
     def compute_metrics(self, queries_result_list: List[object]):
