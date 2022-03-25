@@ -25,7 +25,8 @@ import pickle
 import random
 import tarfile
 from datetime import datetime
-
+from tqdm.autonotebook import trange
+from torch.utils.tensorboard import SummaryWriter
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import numpy as np
 import torch.cuda
@@ -35,13 +36,57 @@ from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
 from accelerate import Accelerator
 from accelerate import DistributedDataParallelKwargs
-
+import time
 #### Just some code to print debug information to stdout
 logging.basicConfig(format='%(asctime)s - %(message)s',
                     datefmt='%Y-%m-%d %H:%M:%S',
                     level=logging.INFO,
                     handlers=[LoggingHandler()])
 #### /print debug information to stdout
+def getdata(train_queries_filepath,collection_filepath,train_qrels_filepath):
+    corpus = {}  # dict in the format: passage_id -> passage. Stores all existent passages
+    train_queries = {}  
+    with open(train_qrels_filepath) as fIn:
+        for line in fIn:
+            qid, pos_pids, neg_pids = line.strip('\n').split('\t')
+            train_queries[qid]={'qid':qid,'pos':eval(pos_pids),'neg':eval(neg_pids)}
+
+    with open(train_queries_filepath, 'r', encoding='utf8') as fIn:
+        for idx, line in enumerate(fIn):
+            qid, query = line.strip().split("\t")
+            if qid not in train_queries:
+                continue
+        # qid = int(qid)
+            if "t5" in args.model_name_or_path or "T5" in args.model_name_or_path:
+                query="Query: "+query
+            else :
+                query="Query: "+query
+                query = "[SOS]" + query
+            if idx == 0:
+                logging.info(f"Train Query Example: {query}")
+            train_queries[qid]['query'] = query
+
+
+
+    # Read dev passages
+    logging.info("Read corpus: collection.tsv")
+    with open(collection_filepath, encoding='utf8') as fIn:
+        for line in fIn:
+            if "t5" in args.model_name_or_path or "T5" in args.model_name_or_path:
+                pid,title,body =line.strip().split('\t')
+                title,body=title.strip(),body.strip()
+                passage="Title: "+title+"Passage: "+body
+            else:
+                pid,title,body =line.strip().split('\t')
+                title,body=title.strip(),body.strip()
+                passage="Title: "+title+"Passage: "+body
+                passage = "{SOS}" + passage
+            corpus[pid] = passage
+
+    return train_queries,corpus
+
+
+
 class MSMARCODataset(Dataset):
         def __init__(self, queries, corpus, asym=False):
             self.queries = queries
@@ -50,10 +95,10 @@ class MSMARCODataset(Dataset):
 
             self.asym = asym
 
-            for qid in self.queries:
+            #for qid in self.queries:
                 #self.queries[qid]['pos'] = list(self.queries[qid]['pos'])
                 #self.queries[qid]['neg'] = list(self.queries[qid]['neg'])
-                random.shuffle(self.queries[qid]['neg'])
+            #    random.shuffle(self.queries[qid]['neg'])
 
         def __getitem__(self, item):
             query = self.queries[self.queries_ids[item]]
@@ -114,14 +159,13 @@ parser.add_argument("--pooling", default="mean")
 parser.add_argument("--freeze", action="store_true", help="Freeze transformer")
 parser.add_argument("--freezenonbias", action="store_true", help="Freeze all except biases in transformer")
 parser.add_argument("--unfreezewte", action="store_true", help="Unfreeze Word Token Embeddings")
+parser.add_argument("--log_dir", type=str,default=None)
                     # decides train of inference
 #parser.add_argument("--no_training", action="store_true")
                     # training settings
 parser.add_argument("--ce_score_margin", default=3.0, type=float)
 parser.add_argument("--steps_per_epoch", default=None, type=int)
 parser.add_argument("--epochs", default=10, type=int)
-parser.add_argument("--negs_to_use", default=None,
-                    help="From which systems should negatives be used? Multiple systems seperated by comma. None = all")
 parser.add_argument("--warmup_steps", default=1000, type=int)
 parser.add_argument("--lr", default=2e-5, type=float)
 parser.add_argument("--num_negs_per_system", default=5, type=int)
@@ -133,16 +177,16 @@ parser.add_argument("--use_amp", action="store_true")
 parser.add_argument("--wandb", action="store_true")
 parser.add_argument("--wandbwatchlog", default="all", type=str) # Set e.g. to just gradients for large models
 parser.add_argument("--local_rank", type=int, default=-1)
+parser.add_argument("--bootstrap", default=False,action="store_true")
+parser.add_argument("--round", default=1,type=int)
 args = parser.parse_args()
 
-print(args)
 
 data_folder = args.data_folder
 
 torch.manual_seed(args.seed)
 random.seed(args.seed)
 np.random.seed(args.seed)
-
 # The  model we want to fine-tune
 model_name_or_path = args.model_name_or_path
 
@@ -158,10 +202,17 @@ else:
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
     accelerator = Accelerator(kwargs_handlers=[ddp_kwargs])
 
-if args.wandb and accelerator.is_main_process:
-    import wandb
-    wandb.init(project="sgpt", entity="muennighoff")
-    wandb.config.update(args)
+#if args.log_dir is not None and accelerator.is_main_process:
+#        writer = SummaryWriter(args.log_dir)
+#        tb = writer
+#else:
+#    tb = None
+
+print(args)
+#if args.wandb and accelerator.is_main_process:
+#    import wandb
+#    wandb.init(project="sgpt", entity="muennighoff")
+#    wandb.config.update(args)
 
 # Load our embedding model
 if args.use_pre_trained_model:
@@ -227,139 +278,76 @@ if args.freeze or args.freezenonbias:
 
 collection_filepath = os.path.join(data_folder, args.corpus_name)
 train_queries_filepath = os.path.join(data_folder, args.train_queries_name)
-#dev_queries_filepath=os.path.join(data_folder, args.dev_queries_name)
-#test_queries_filepath=os.path.join(data_folder, args.test_queries_name)
 train_qrels_filepath=os.path.join(data_folder, args.train_qrels_name)
-#dev_qrels_filepath=os.path.join(data_folder, args.dev_qrels_name)
-#test_qrels_filepath=os.path.join(data_folder, args.test_qrels_name)
-                ## only training needs the two files
-ce_scores_file = os.path.join(data_folder, 'cross-encoder-ms-marco-MiniLM-L-6-v2-scores.pkl.gz')
-hard_negatives_filepath = os.path.join(data_folder, 'msmarco-hard-negatives.jsonl.gz')
 
-corpus = {}  # dict in the format: passage_id -> passage. Stores all existent passages
-queries = {}  
-#dev_queries = {}
-train_rel_docs={}
-#dev_rel_docs = {}  # Mapping qid => set with relevant pids
-needed_pids = set()  # Passage IDs we need
-
-with open(train_queries_filepath, 'r', encoding='utf8') as fIn:
-    for idx, line in enumerate(fIn):
-        qid, query = line.strip().split("\t")
-       # qid = int(qid)
-        if "t5" in args.model_name_or_path or "T5" in args.model_name_or_path:
-            query="Query: "+query
-        else :
-            query="Query: "+query
-            query = "[SOS]" + query
-        if idx == 0:
-            logging.info(f"Train Query Example: {query}")
-        queries[qid] = query
-
-
-###     Read train relevant documents
-#with open(train_qrels_filepath) as fIn:
-#    for line in fIn:
-#        qid, _, pid, score = line.strip().split('\t')
-#        if eval(score) < 1:
-#            continue
-#        if qid not in train_queries:
-#            continue
-#
-#        if qid not in train_rel_docs:
-#            train_rel_docs[qid] = set()
-#        train_rel_docs[qid].add(pid)
-#
-#        needed_pids.add(pid)
-
-# Read dev passages
-logging.info("Read corpus: collection.tsv")
-with open(collection_filepath, encoding='utf8') as fIn:
-    for line in fIn:
-        if "t5" in args.model_name_or_path or "T5" in args.model_name_or_path:
-            pid,title,body =line.strip().split('\t')
-            title,body=title.strip(),body.strip()
-            passage="Title: "+title+"Passage: "+body
-        else:
-            pid,title,body =line.strip().split('\t')
-            title,body=title.strip(),body.strip()
-            passage="Title: "+title+"Passage: "+body
-            passage = "{SOS}" + passage
-        corpus[pid] = passage
-
-logging.info("Load CrossEncoder scores dict")
-with gzip.open(ce_scores_file, 'rb') as fIn:
-    ce_scores = pickle.load(fIn)
-
-logging.info("Read hard negatives train file")
-train_queries = {}
-negs_to_use = None
-with gzip.open(hard_negatives_filepath, 'rt') as fIn:
-    for i, line in tqdm.tqdm(enumerate(fIn)):
-        data = json.loads(line)
-
-        # Get the positive passage ids
-        qid =data['qid']
-        pos_pids =data['pos']
-
-        if len(pos_pids) == 0:  # Skip entries without positives passages
-            continue
-
-        pos_min_ce_score = min([ce_scores[qid][pid] for pid in data['pos']])
-        ce_score_threshold = pos_min_ce_score - ce_score_margin
-
-        # Get the hard negatives
-        neg_pids = set()
-        if negs_to_use is None:
-            if args.negs_to_use is not None:  # Use specific system for negatives
-                negs_to_use = args.negs_to_use.split(",")
-            else:  # Use all systems
-                negs_to_use = list(data['neg'].keys())
-            logging.info("Using negatives from the following systems: {}".format(", ".join(negs_to_use)))
-
-        for system_name in negs_to_use:
-            if system_name not in data['neg']:
-                continue
-
-            system_negs = data['neg'][system_name]
-            negs_added = 0
-            for pid in system_negs:
-                if ce_scores[qid][pid] > ce_score_threshold:
-                    continue
-
-                if pid not in neg_pids:
-                    neg_pids.add(str(pid))
-                    negs_added += 1
-                    if negs_added >= num_negs_per_system:
-                        break
-
-        if str(data['qid']) in queries and len(neg_pids)>0:
-            train_queries[str(data['qid'])] = {'qid': str(data['qid']), 'query': queries[str(data['qid'])], 'pos':[str(id) for id in pos_pids],
-                                            'neg': list(neg_pids)}
-
-        if args.train_dataset_max_size is not None and i > args.train_dataset_max_size:
-            break
-
+train_queries,corpus=getdata(train_queries_filepath,collection_filepath,train_qrels_filepath)
 logging.info("Train queries: {}".format(len(train_queries)))
 
 # For training the SentenceTransformer model, we need a dataset, a dataloader, and a loss used for training.
 train_dataset = MSMARCODataset(train_queries, corpus=corpus)
-#dev_dataset = MSMARCODataset(dev_queries, corpus=corpus, asym=args.asym)
 train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=train_batch_size)
-#dev_dataloader = DataLoader(dev_dataset, shuffle=True, batch_size=train_batch_size*4 if args.dev_batch_size is None else args.dev_batch_size)
 train_loss = losses.MultipleNegativesRankingLoss(model=model)
-if args.wandb and accelerator.is_main_process:
-    wandb.watch(model, log=args.wandbwatchlog, criterion=train_loss, log_freq=100)
 
-
+qrels_path_list=[]
+qrels_path_list_file=os.path.join(data_folder,"qrels_path.tsv" )
+fp=open(qrels_path_list,'w')
 # Train the model
-model.fit(train_objectives=[(train_dataloader, train_loss)],
-            epochs=num_epochs,
-            warmup_steps=args.warmup_steps,
-            use_amp=args.use_amp,
-            checkpoint_save_folder=args.checkpoint_save_folder,
-            optimizer_params={'lr': args.lr},
-            show_progress_bar=True,
-            steps_per_epoch=args.steps_per_epoch,
-            accelerator=accelerator
-            )
+if args.bootstrap:
+    for round_idx in trange(args.round,desc="Bootstrap Round", disable=not accelerator.is_main_process):
+        for stage in trange(2,desc="Stage", disable=not accelerator.is_main_process):
+            if args.log_dir is not None and accelerator.is_main_process:
+                writer = SummaryWriter(os.path.join(args.log_dir,"round{}-stage{}".format(round_idx,stage)))
+                tb = writer
+            else:
+                tb=None
+            # first fit
+            model.fit(train_objectives=[(train_dataloader, train_loss)],
+                    epochs=num_epochs,
+                    warmup_steps=args.warmup_steps,
+                    use_amp=args.use_amp,
+                    checkpoint_save_folder=args.checkpoint_save_folder,
+                    optimizer_params={'lr': args.lr},
+                    show_progress_bar=accelerator.is_main_process,
+                    steps_per_epoch=args.steps_per_epoch,
+                    accelerator=accelerator,
+                    tb=tb,
+                    round=round_idx,
+                    stage=stage
+                    )
+            # wite for new qrels to be generated
+            while (round_idx,stage) not in qrels_path_list:
+                print("******waiting new qrels to be generated by inference process...******")
+                with open(qrels_path_list_file,'r') as f:
+                    for item in f:
+                        round_num,stage_num,path=item.strip('\n').split('\t')
+                        round_num,stage_num=int(round_num),int(stage_num)
+                        if (round_num,stage_num) not in qrels_path_list:
+                            qrels_path_list.append((round_num,stage_num))
+                time.sleep(1500)
+            # use new qrels create new datasets
+            train_qrels_filepath=os.path.join(data_folder, "round{}-stage{}_".format(round_idx,stage)+args.train_qrels_name)
+            train_queries,corpus=getdata(train_queries_filepath,collection_filepath,train_qrels_filepath)
+            logging.info("Train queries: {}".format(len(train_queries)))
+            train_dataset = MSMARCODataset(train_queries, corpus=corpus)
+            train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=train_batch_size)
+            train_loss = losses.MultipleNegativesRankingLoss(model=model)
+else:
+    if args.log_dir is not None and accelerator.is_main_process:
+        writer = SummaryWriter(os.path.join(args.log_dir,"round{}-stage{}".format(0,0)))
+        tb = writer
+    else:
+        tb=None
+    model.fit(train_objectives=[(train_dataloader, train_loss)],
+                epochs=num_epochs,
+                warmup_steps=args.warmup_steps,
+                use_amp=args.use_amp,
+                checkpoint_save_folder=args.checkpoint_save_folder,
+                optimizer_params={'lr': args.lr},
+                show_progress_bar=True,
+                steps_per_epoch=args.steps_per_epoch,
+                accelerator=accelerator,
+                tb=tb,
+                round=0,
+                stage=0
+                )
+

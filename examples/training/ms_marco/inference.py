@@ -66,7 +66,8 @@ parser.add_argument("--pooling", default="mean")
 parser.add_argument("--wandb", action="store_true")
 parser.add_argument("--wandbwatchlog", default="all", type=str) # Set e.g. to just gradients for large models
 parser.add_argument("--local_rank", type=int, default=-1)
-parser.add_argument("--epoch",type=int,default=1)
+parser.add_argument("--round",type=int,default=1)
+parser.add_argument("--stage",type=int,default=1)
 parser.add_argument("--seed",type=int,default=1)
 args = parser.parse_args()
 
@@ -231,4 +232,4 @@ ir_evaluator = evaluation.InformationRetrievalEvaluator(test_queries, corpus, te
                                                         corpus_embedding_path=args.test_corpus_embedding_path,
                                                         score_path=args.test_topk_score_path
                                                         )
-ir_evaluator(model,epoch=args.epoch)
+ir_evaluator(model,round=args.round,stage=args.stage)

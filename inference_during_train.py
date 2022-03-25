@@ -12,9 +12,13 @@ parser.add_argument("--margin", default=0.1, type=int)
 args = parser.parse_args()
 
 dir="/data/home/scv0540/run/my_dr/checkpoints/{}_{}-pooling_{}".format(args.model,args.pooling,args.datasets)
+if not os.path.exists(dir):
+    os.mkdir(dir)
 map_file="{}/checkpoint_path.tsv".format(dir)
-qrels_path="/data/home/scv0540/run/my_dr/datasets/{}/qrels-irrels.train.tsv".format(args.dataset)
-qrels_path_list_file="/data/home/scv0540/run/my_dr/datasets/{}/qrels_path.tsv".format(args.dataset)
+with open(map_file,'w') as f:
+    pass
+qrels_path="/data/home/scv0540/run/my_dr/datasets/{}/qrels-irrels.train.tsv".format(args.datasets)
+qrels_path_list_file="/data/home/scv0540/run/my_dr/datasets/{}/qrels_path.tsv".format(args.datasets)
 score_path="/data/home/scv0540/run/my_dr/scores/{}_{}-pooling_{}_test.txt".format(args.model,args.pooling,args.datasets)  
 rs_list=[]
 times=1
