@@ -7,6 +7,13 @@ pooling=$2
 datasets=$3
 round=$4
 stage=$5
+mode=$6
+test_queries_name="queries.dev.small.tsv"
+test_qrels_name="qrels.dev.small.tsv"
+if [ "x$mode" == "xtrain" ]; then
+    test_queries_name="queries.train.tsv"
+    test_qrels_name="qrels.train.tsv"
+fi
 identifier="${model}_${pooling}-pooling_${datasets}"
 project_path="/data/home/scv0540/run/my_dr"
 cache_folder="/data/home/scv0540/run/pretrained_models/"
@@ -15,12 +22,10 @@ checkpoint_save_folder="${project_path}/checkpoints/${identifier}/"
 model_name_or_path="${checkpoint_save_folder}/round${round}-stage${stage}/"
 results_save_folder="${project_path}/results/${identifier}/"
 #dev_corpus_embedding_path="${project_path}/corpus_embeddings/${identifier}_dev.txt"
-test_corpus_embedding_path="${project_path}/corpus_embeddings/${identifier}_test.txt"
+test_corpus_embedding_path="${project_path}/corpus_embeddings/${identifier}_$mode.txt"
 #dev_topk_score_path="${project_path}/scores/${identifier}_dev.txt"
-test_topk_score_path="${project_path}/scores/${identifier}_test.txt"
+test_topk_score_path="${project_path}/scores/${identifier}_$mode.txt"
 corpus_name="corpus_with_title.tsv"
-test_queries_name="queries.dev.small.tsv"
-test_qrels_name="qrels.dev.small.tsv"
 accelerate launch\
  --config_file accelerate_config.yaml\
  examples/training/ms_marco/inference.py\
@@ -34,10 +39,11 @@ accelerate launch\
  --test_qrels_name $test_qrels_name\
  --corpus_name $corpus_name\
  --encode_batch_size 300\
- --corpus_chunk_size 200000\
+ --corpus_chunk_size 100000\
  --model_name_or_path ${model_name_or_path}\
  --pooling $pooling\
  --round $round\
  --stage $stage\
  --seed 13\
  --use_pre_trained_model\
+ --mode $mode\
