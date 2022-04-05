@@ -324,7 +324,7 @@ if args.bootstrap:
                         round_num,stage_num=int(round_num),int(stage_num)
                         if (round_num,stage_num) not in qrels_path_list:
                             qrels_path_list.append((round_num,stage_num))
-                time.sleep(1500)
+                time.sleep(60)
             # use new qrels create new datasets
             train_qrels_filepath=os.path.join(qrels_dir, "round{}-stage{}_".format(round_idx,stage)+args.train_qrels_name)
             train_queries,corpus=getdata(train_queries_filepath,collection_filepath,train_qrels_filepath)

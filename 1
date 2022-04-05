@@ -26,7 +26,7 @@ train_topk_score_path="${project_path}/scores/${identifier}_train.tsv"
 
 accelerate launch\
  --config_file accelerate_config.yaml\
- inference.py\
+ examples/training/ms_marco/inference.py\
  --identifier $identifier\
  --cache_folder $cache_folder\
  --data_folder $data_folder\

@@ -9,24 +9,24 @@ stage=$5
 
 test_queries_name="queries.dev.small.tsv"
 test_qrels_name="qrels.dev.small.tsv"
-train_queries_name="queries.train.tsv"
-train_qrels_name="qrels.train.tsv"
+train_queries_name="queries.dev.small.tsv"
+train_qrels_name="qrels.dev.small.tsv"
 corpus_name="corpus_with_title.tsv"
 
-identifier="${model}_${pooling}-pooling_${datasets}"
+identifier="released_${model}_${pooling}-pooling_${datasets}"
 project_path="/data/home/scv0540/run/my_dr"
 cache_folder="/data/home/scv0540/run/pretrained_models/"
 data_folder="${project_path}/datasets/${datasets}/"
 checkpoint_save_folder="${project_path}/checkpoints/${identifier}/"
-model_name_or_path="${checkpoint_save_folder}/round${round}-stage${stage}/"
-
+#model_name_or_path="${checkpoint_save_folder}/round${round}-stage${stage}/"
+model_name_or_path="/data/home/scv0540/run/pretrained_models/sgpt-125M"
 results_save_folder="${project_path}/results/${identifier}/"
 test_topk_score_path="${project_path}/scores/${identifier}_test.tsv"
 train_topk_score_path="${project_path}/scores/${identifier}_train.tsv"
 
 accelerate launch\
  --config_file accelerate_config.yaml\
- inference.py\
+ inference_v2.py\
  --identifier $identifier\
  --cache_folder $cache_folder\
  --data_folder $data_folder\

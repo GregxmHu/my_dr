@@ -181,7 +181,10 @@ train_rel_docs = {}  # Mapping qid => set with relevant pids
 ### Download files if needed
 with open(train_queries_file, encoding='utf8') as fIn:
     for idx,line in enumerate(fIn):
-        qid, query = line.strip().split("\t")
+        #qid, query = line.strip('\n').split("\t")
+        item=json.loads(line)
+        qid=item['_id']
+        query=item['text']
         #qid = int(qid)
         if "t5" in args.model_name_or_path or "T5" in args.model_name_or_path:
             query="Query: "+query
@@ -195,7 +198,7 @@ with open(train_queries_file, encoding='utf8') as fIn:
 # Load which passages are relevant for which queries
 with open(train_qrels_filepath) as fIn:
     for line in fIn:
-        qid, _, pid, _ = line.strip().split('\t')
+        qid, _, pid, _ = line.strip('\n').split('\t')
         if qid not in train_queries:
             continue
 
@@ -206,30 +209,33 @@ with open(train_qrels_filepath) as fIn:
 # Read passages
 with open(collection_filepath, encoding='utf8') as fIn:
     for line in fIn:
+        item=json.loads(line)
+        pid=item['_id']
+        title=item['title']
+        body=item['text']
         if "t5" in args.model_name_or_path or "T5" in args.model_name_or_path:
-            pid,title,body =line.strip().split('\t')
-            title,body=title.strip(),body.strip()
-            passage="Title: "+title+"Passage: "+body
+            #pid,title,body =line.strip('\n').split('\t')
+            #title,body=title.strip(),body.strip()
+            passage=title+" "+body
         else:
-            if 1>2:
-                pid,passage=line.strip().split('\t')
-                pid,passage=pid.strip(),passage.strip()
-                passage = "{SOS}" + passage
-            else:
-                pid,title,body =line.strip().split('\t')
-                title,body=title.strip(),body.strip()
-                passage="Title: "+title+"Passage: "+body
-                passage = "{SOS}" + passage
+            #pid,title,body =line.strip('\n').split('\t')
+            #title,body=title.strip(),body.strip()
+            #passage="Title: "+title+"Passage: "+body
+            passage=title+' '+body
+            passage = "{SOS}" + passage
         corpus[pid] = passage
 # Load the 6980 dev queries
 with open(test_queries_file, encoding='utf8') as fIn:
     for idx,line in enumerate(fIn):
-        qid, query = line.strip().split("\t")
+        item=json.loads(line)
+        qid=item['_id']
+        query=item['text']
         #qid = int(qid)
         if "t5" in args.model_name_or_path or "T5" in args.model_name_or_path:
-            query="Query: "+query
+            #query="Query: "+query
+            query=query
         else :
-            query="Query: "+query
+            #query="Query: "+query
             query = "[SOS]" + query
         if idx == 0:
             logging.info(f"Train Query Example: {query}")
@@ -238,7 +244,7 @@ with open(test_queries_file, encoding='utf8') as fIn:
 # Load which passages are relevant for which queries
 with open(test_qrels_filepath) as fIn:
     for line in fIn:
-        qid, _, pid, _ = line.strip().split('\t')
+        qid, _, pid, _ = line.strip('\n').split('\t')
         if qid not in test_queries:
             continue
 
@@ -261,7 +267,6 @@ ir_evaluator = evaluation.InformationRetrievalEvaluator(corpus=corpus,
                                                         accelerator=accelerator,
                                                         results_save_folder=args.results_save_folder,
                                                         test_score_path=args.test_topk_score_path,
-                                                        train_score_path=args.train_topk_score_path
-                                                        )
+                                                        train_score_path=args.train_topk_score_path  )
 ir_evaluator(model,round=args.round,stage=args.stage)
 

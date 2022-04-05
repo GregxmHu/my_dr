@@ -6,27 +6,28 @@ pooling=$2
 datasets=$3
 round=$4
 stage=$5
+beir_datasets=$6
 
-test_queries_name="queries.dev.small.tsv"
-test_qrels_name="qrels.dev.small.tsv"
-train_queries_name="queries.train.tsv"
-train_qrels_name="qrels.train.tsv"
-corpus_name="corpus_with_title.tsv"
+test_queries_name="queries.jsonl"
+test_qrels_name="qrels.tsv"
+train_queries_name="queries.jsonl"
+train_qrels_name="qrels.tsv"
+corpus_name="corpus.jsonl"
 
 identifier="${model}_${pooling}-pooling_${datasets}"
 project_path="/data/home/scv0540/run/my_dr"
 cache_folder="/data/home/scv0540/run/pretrained_models/"
-data_folder="${project_path}/datasets/${datasets}/"
+data_folder="${project_path}/datasets/${beir_datasets}/"
 checkpoint_save_folder="${project_path}/checkpoints/${identifier}/"
 model_name_or_path="${checkpoint_save_folder}/round${round}-stage${stage}/"
 
-results_save_folder="${project_path}/results/${identifier}/"
-test_topk_score_path="${project_path}/scores/${identifier}_test.tsv"
-train_topk_score_path="${project_path}/scores/${identifier}_train.tsv"
+results_save_folder="${project_path}/results/${beir_datasets}/${identifier}/"
+test_topk_score_path="${project_path}/scores/${beir_datasets}/${identifier}_test.tsv"
+train_topk_score_path="${project_path}/scores/${beir_datasets}/${identifier}_train.tsv"
 
 accelerate launch\
  --config_file accelerate_config.yaml\
- inference.py\
+ inference_beir_v2.py\
  --identifier $identifier\
  --cache_folder $cache_folder\
  --data_folder $data_folder\

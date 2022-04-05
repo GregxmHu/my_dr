@@ -14,26 +14,6 @@ from accelerate import Accelerator
 from accelerate import DistributedDataParallelKwargs
 from typing import List, Tuple, Dict, Set, Callable
 import json
-class Corpus(Dataset):
-        def __init__(self, corpus):
-            self.corpus_ids = list(corpus.keys())
-            self.corpus=corpus
-
-        def __getitem__(self, idx):
-            return {'corpus_id':self.corpus_ids[idx],
-            'corpus_text':self.corpus[
-                self.corpus_ids[idx]
-                ]
-                }
-
-        def __len__(self):
-            return len(self.corpus_ids)
-
-        def collate(self,batch):
-            batch_ids=[item['corpus_id'] for item in batch]
-            batch_texts=[item['corpus_text'] for item in batch]
-            return {'batch_ids':batch_ids,'batch_texts':batch_texts}
-
 
 logger = logging.getLogger(__name__)
 
@@ -46,38 +26,48 @@ class InformationRetrievalEvaluator(SentenceEvaluator):
     """
 
     def __init__(self,
-                 queries: Dict[str, str],  #qid => query
+                 train_queries: Dict[str, str],  #qid => query
+                 train_relevant_docs: Dict[str, Set[str]],  #qid => Set[cid]
+                 test_queries: Dict[str, str],  #qid => query
+                 test_relevant_docs: Dict[str, Set[str]],  #qid => Set[cid]
                  corpus: Dict[str, str],  #cid => doc
-                 relevant_docs: Dict[str, Set[str]],  #qid => Set[cid]
                  corpus_chunk_size: int = 320,
                  mrr_at_k: List[int] = [10],
                  ndcg_at_k: List[int] = [10],
                  accuracy_at_k: List[int] = [10],
                  precision_recall_at_k: List[int] = [10],
-                 map_at_k: List[int] = [100],
+                 map_at_k: List[int] = [10],
                  show_progress_bar: bool = False,
                  encode_batch_size: int = 32,
-                 name: str = '',
+                 #name: str = '',
                  write_csv: bool = True,
-                 score_functions: List[Callable[[Tensor, Tensor], Tensor] ] = {'cos_sim': cos_sim, 'dot_score': dot_score},       #Score function, higher=more similar
+                 score_functions: List[Callable[[Tensor, Tensor], Tensor] ] = {'cos_sim': cos_sim},       #Score function, higher=more similar
                  main_score_function: str = None,
                  accelerator: Accelerator = None,
-                 corpus_embedding_path: str="/data/private/huxiaomeng/sgpt/corpus_embeddings/msmarco_small.txt",
+                 #corpus_embedding_path: str="/data/private/huxiaomeng/sgpt/corpus_embeddings/msmarco_small.txt",
                  results_save_folder: str=None,
-                 score_path: str="/data/private/huxiaomeng/sgpt/corpus_embeddings/sgpt-125M-scifact_topk_score.txt",
+                 train_score_path: str="/data/private/huxiaomeng/sgpt/corpus_embeddings/sgpt-125M-scifact_topk_score.txt",
+                 test_score_path:str="/data/private/huxiaomeng/sgpt/corpus_embeddings/sgpt-125M-scifact_topk_score.txt"
                  ):
-        self.score_path=score_path
+        self.train_score_path=train_score_path
+        self.test_score_path=test_score_path
         self.corpus_chunk_size=corpus_chunk_size
         self.encode_batch_size=encode_batch_size
-        self.corpus_embedding_path=corpus_embedding_path
+        #self.corpus_embedding_path=corpus_embedding_path
         self.results_save_folder=results_save_folder
-        self.queries_ids = []
-        for qid in queries:
-            if qid in relevant_docs and len(relevant_docs[qid]) > 0:
-                self.queries_ids.append(qid)
+        self.train_queries_ids = []
+        self.test_queries_ids = []
+        for qid in train_queries:
+            if qid in train_relevant_docs and len(train_relevant_docs[qid]) > 0:
+                self.train_queries_ids.append(qid)
 
-        self.queries = [queries[qid] for qid in self.queries_ids]
+        self.train_queries = [train_queries[qid] for qid in self.train_queries_ids]
         
+        for qid in test_queries:
+            if qid in test_relevant_docs and len(test_relevant_docs[qid]) > 0:
+                self.test_queries_ids.append(qid)
+
+        self.test_queries = [test_queries[qid] for qid in self.test_queries_ids]
         # self.corpus_ids = list(corpus.keys())
         # self.corpus = [corpus[cid] for cid in self.corpus_ids]
         ###
@@ -90,7 +80,8 @@ class InformationRetrievalEvaluator(SentenceEvaluator):
         #    DataLoader(self.corpus_dataset,batch_size=self.corpus_chunk_size,collate_fn=self.corpus_dataset.collate,num_workers=12)
         #)
         ###
-        self.relevant_docs = relevant_docs
+        self.train_relevant_docs = train_relevant_docs
+        self.test_relevant_docs = test_relevant_docs
         #self.corpus_chunk_size = corpus_chunk_size
         self.mrr_at_k = mrr_at_k
         self.ndcg_at_k = ndcg_at_k
@@ -100,17 +91,19 @@ class InformationRetrievalEvaluator(SentenceEvaluator):
 
         self.show_progress_bar = show_progress_bar
         self.encode_batch_size = encode_batch_size
-        self.name = name
+        #self.name = name
         self.write_csv = write_csv
         self.score_functions = score_functions
         self.score_function_names = sorted(list(self.score_functions.keys()))
         self.main_score_function = main_score_function
 
-        if name:
-            name = "_" + name
+        #if name:
+        #    name = "_" + name
 
-        self.csv_file: str = name + "_results.csv"
-        self.csv_headers = ["round","stage"]
+        self.train_csv_file: str = "train_results.csv"
+        self.test_csv_file: str = "test_results.csv"
+        self.train_csv_headers = ["round","stage"]
+        self.test_csv_headers = ["round","stage"]
 
         for score_name in self.score_function_names:
             #for k in accuracy_at_k:
@@ -121,16 +114,16 @@ class InformationRetrievalEvaluator(SentenceEvaluator):
             #    self.csv_headers.append("{}-Recall@{}".format(score_name, k))
 
             for k in mrr_at_k:
-                self.csv_headers.append("{}-MRR@{}".format(score_name, k))
-
+                self.train_csv_headers.append("{}-MRR@{}".format(score_name, k))
+                self.test_csv_headers.append("{}-MRR@{}".format(score_name, k))
             for k in ndcg_at_k:
-                self.csv_headers.append("{}-NDCG@{}".format(score_name, k))
-
+                self.train_csv_headers.append("{}-NDCG@{}".format(score_name, k))
+                self.test_csv_headers.append("{}-NDCG@{}".format(score_name, k))
             #for k in map_at_k:
             #    self.csv_headers.append("{}-MAP@{}".format(score_name, k))
 
     def __call__(self, model,  round: int = 1,stage: int =1,  num_proc: int = None, *args, **kwargs) -> float:
-        logger.info("Information Retrieval Evaluation on " + self.name + " dataset" + " after round {} stage {}".format(round,stage))
+        logger.info("Information Retrieval Evaluation and Refresh negatives" + " after round {} stage {}".format(round,stage))
 
         self.compute_metrices(model,round=round,stage=stage, *args, num_proc=num_proc, **kwargs)
         #return score
@@ -145,13 +138,17 @@ class InformationRetrievalEvaluator(SentenceEvaluator):
             corpus_model = model
         #model,corpus_model=self.accelerator.prepare(model,corpus_model)
         max_k = max(max(self.mrr_at_k), max(self.ndcg_at_k), max(self.accuracy_at_k), max(self.precision_recall_at_k), max(self.map_at_k))
-        query_embeddings = model.module.encode(self.queries, show_progress_bar=True, batch_size=self.encode_batch_size, convert_to_tensor=True, num_proc=num_proc,accelerator=self.accelerator)
-        queries_result_list = {}
-        logger.info("Queries: {}".format(len(self.queries)))
+        train_query_embeddings = model.module.encode(self.train_queries, show_progress_bar=self.accelerator.is_main_process, batch_size=self.encode_batch_size, convert_to_tensor=True, num_proc=num_proc,accelerator=self.accelerator)
+        test_query_embeddings = model.module.encode(self.test_queries, show_progress_bar=self.accelerator.is_main_process, batch_size=self.encode_batch_size, convert_to_tensor=True, num_proc=num_proc,accelerator=self.accelerator)
+
+        train_queries_result_list = {}
+        test_queries_result_list = {}
+        logger.info("Train Queries: {}   Test Queries: {}".format(len(self.train_queries),len(self.test_queries)))
         for name in self.score_functions:
-            queries_result_list[name] = [[] for _ in range(len(query_embeddings))]
+            #train_queries_result_list[name] = [[] for _ in range(len(train_query_embeddings))]
+            test_queries_result_list[name] = [[] for _ in range(len(test_query_embeddings))]
         ### encode corpus
-        for corpus_start_idx in trange(0, len(self.corpus_ids), self.corpus_chunk_size, desc='Encode Corpus'):
+        for corpus_start_idx in trange(0, len(self.corpus_ids), self.corpus_chunk_size, desc='Encode Corpus',disable=not self.accelerator.is_main_process):
             corpus_end_idx = min(corpus_start_idx + self.corpus_chunk_size, len(self.corpus_ids))
             #sub_corpus_embeddings = torch.tensor(corpus_embeddings[corpus_start_idx:corpus_end_idx]).to(self.accelerator.device)
             batch_ids=self.corpus_ids[corpus_start_idx:corpus_end_idx]
@@ -164,147 +161,89 @@ class InformationRetrievalEvaluator(SentenceEvaluator):
                 num_proc=num_proc,
                 accelerator=self.accelerator
             )
-            ### save corpus embeddings
-           # with open(self.corpus_embedding_path,'a+') as f:
-           #     for batch_id,batch_embedding in zip(batch_ids,batch_embeddings):
-            #        f.write(
-             #           batch_id+'\t'+str(list(batch_embedding.cpu().numpy()))+'\n'
-              #  )
-            ### calculate chunk scores and save 
+            for train_query_start_idx in trange(0,len(self.train_queries_ids),2500,disable=True):
+                train_query_end_idx = min(train_query_start_idx + 2500, len(self.train_queries_ids))
+                train_sub_query_embeddings=train_query_embeddings[train_query_start_idx:train_query_end_idx]
+                for name, score_function in self.score_functions.items():
+                    train_pair_scores = score_function(train_sub_query_embeddings, batch_embeddings)
+
+                    #Get top-k values
+                    train_pair_scores_top_k_values, train_pair_scores_top_k_idx = torch.topk(train_pair_scores, 1, dim=1, largest=True, sorted=False)
+                    train_pair_scores_top_k_values = train_pair_scores_top_k_values.cpu().tolist()
+                    train_pair_scores_top_k_idx = train_pair_scores_top_k_idx.cpu().tolist()
+                    with open(self.train_score_path,'a+') as f:
+                        for train_sub_query_itr in trange(0,len(train_sub_query_embeddings),1,disable=True):
+                            #qid=self.queries_ids[query_itr]
+                            for id, train_score in zip(train_pair_scores_top_k_idx[train_sub_query_itr], train_pair_scores_top_k_values[train_sub_query_itr]):
+                                #queries_result_list[name][query_itr].append(
+                                #    {   'corpus_id': corpus_ids[sub_corpus_id], 
+                                #        'score': score
+                                #    }
+                                #    )
+                                train_query_itr=train_query_start_idx+train_sub_query_itr
+                                did=batch_ids[id]
+                                train_qid=self.train_queries_ids[train_query_itr]
+                                f.write(str(train_query_itr)+'\t'+train_qid+'\t'+did+'\t'+name+'\t'+str(train_score)+'\n')
+                   # if self.accelerator.is_main_process:
+                   #     print("save train query-passage scores")
             for name, score_function in self.score_functions.items():
-                pair_scores = score_function(query_embeddings, batch_embeddings)
+                test_pair_scores = score_function(test_query_embeddings, batch_embeddings)
 
                 #Get top-k values
-                pair_scores_top_k_values, pair_scores_top_k_idx = torch.topk(pair_scores, min(max_k, len(pair_scores[0])), dim=1, largest=True, sorted=False)
-                pair_scores_top_k_values = pair_scores_top_k_values.cpu().tolist()
-                pair_scores_top_k_idx = pair_scores_top_k_idx.cpu().tolist()
-                with open(self.score_path,'a+') as f:
-                    for query_itr in trange(0,len(query_embeddings),1,desc="save query-corpus score",disable=not self.accelerator.is_main_process):
+                test_pair_scores_top_k_values, test_pair_scores_top_k_idx = torch.topk(test_pair_scores, min(max_k, len(test_pair_scores[0])), dim=1, largest=True, sorted=False)
+                test_pair_scores_top_k_values = test_pair_scores_top_k_values.cpu().tolist()
+                test_pair_scores_top_k_idx = test_pair_scores_top_k_idx.cpu().tolist()
+                with open(self.test_score_path,'a+') as f:
+                    for test_query_itr in trange(0,len(test_query_embeddings),1,disable=True):
                         #qid=self.queries_ids[query_itr]
-                        for id, score in zip(pair_scores_top_k_idx[query_itr], pair_scores_top_k_values[query_itr]):
+                        for id, test_score in zip(test_pair_scores_top_k_idx[test_query_itr], test_pair_scores_top_k_values[test_query_itr]):
                             #queries_result_list[name][query_itr].append(
                             #    {   'corpus_id': corpus_ids[sub_corpus_id], 
                             #        'score': score
                             #    }
                             #    )
+                            #train_query_itr=train_query_start_idx+train_sub_query_itr
                             did=batch_ids[id]
-                            qid=self.queries_ids[query_itr]
-                            f.write(str(query_itr)+'\t'+qid+'\t'+did+'\t'+name+'\t'+str(score)+'\n')
-
+                            test_qid=self.test_queries_ids[test_query_itr]
+                            f.write(str(test_query_itr)+'\t'+test_qid+'\t'+did+'\t'+name+'\t'+str(test_score)+'\n')
+            if self.accelerator.is_main_process:
+                print("save test query-passage scores")
         logger.info("Corpus: {}\n".format(len(self.corpus)))
             
-        ### new iteration
-        #tk = tqdm(
-        #self.corpus_dataloader,
-        #disable=not self.accelerator.is_local_main_process,
-        #desc='Encode Corpus'
-    #)
-        ### encode corpus
-        #for _,batch in enumerate(tk):
-        #    batch_ids,batch_texts=batch['batch_ids'],batch['batch_texts']
-        #    batch_embeddings = corpus_model.module.encode(
-        #        batch_texts,
-        #        show_progress_bar=False, 
-        #        batch_size=self.encode_batch_size, 
-        #        convert_to_tensor=True, 
-        #        num_proc=num_proc,
-        #        accelerator=self.accelerator
-        #    )
-        #    ### save corpus embeddings
-        #    with open(self.corpus_embedding_path,'a+') as f:
-        #        for batch_id,batch_embedding in zip(batch_ids,batch_embeddings):
-        #            f.write(
-        #                batch_id+'\t'+str(list(batch_embedding.cpu().numpy()))+'\n'
-        #        )
-        #Iterate over chunks of the corpus
-        #for corpus_start_idx in trange(0, len(self.corpus), self.corpus_chunk_size, desc='Corpus Chunks', disable=not self.show_progress_bar):
-        #    corpus_end_idx = min(corpus_start_idx + self.corpus_chunk_size, len(self.corpus))
-
-            #Encode chunk of corpus
-        #    if corpus_embeddings is None:
-        #        sub_corpus_embeddings = corpus_model.encode(self.corpus[corpus_start_idx:corpus_end_idx], show_progress_bar=False, batch_size=self.batch_size, convert_to_tensor=True, num_proc=num_proc)
-        #    else:
-        #        sub_corpus_embeddings = corpus_embeddings[corpus_start_idx:corpus_end_idx]
-
-            #Compute cosine similarites
-        #    for name, score_function in self.score_functions.items():
-        #        pair_scores = score_function(query_embeddings, sub_corpus_embeddings)
-
-                #Get top-k values
-        #        pair_scores_top_k_values, pair_scores_top_k_idx = torch.topk(pair_scores, min(max_k, len(pair_scores[0])), dim=1, largest=True, sorted=False)
-        #        pair_scores_top_k_values = pair_scores_top_k_values.cpu().tolist()
-        #        pair_scores_top_k_idx = pair_scores_top_k_idx.cpu().tolist()
-
-        #        for query_itr in range(len(query_embeddings)):
-        #            for sub_corpus_id, score in zip(pair_scores_top_k_idx[query_itr], pair_scores_top_k_values[query_itr]):
-        #                corpus_id = self.corpus_ids[corpus_start_idx+sub_corpus_id]
-        #                queries_result_list[name][query_itr].append({'corpus_id': corpus_id, 'score': score})
+        
         if self.accelerator.is_local_main_process:
-            ##### load scores and calculate metrics####
+            
+            
 
-            #query_embeddings = model.module.encode(self.queries, show_progress_bar=True, batch_size=self.encode_batch_size, convert_to_tensor=True, num_proc=num_proc,accelerator=self.accelerator)
-            
-            #queries_result_list = {}
-            #for name in self.score_functions:
-            #    queries_result_list[name] = [[] for _ in range(len(query_embeddings))]
-            
-            ### load corpus embeddings        
-            #corpus_ids=[]
-            #corpus_embeddings=[]
-            with open(self.score_path,'r') as f:
+            with open(self.test_score_path,'r') as f:
                 for item in f:
                     pair_score=item.strip('\n').split('\t')
                     query_itr,did,name,score=eval(pair_score[0]),pair_score[2],pair_score[3],eval(pair_score[4])
-                    queries_result_list[name][query_itr].append(
+                    test_queries_result_list[name][query_itr].append(
                                 {   'corpus_id': did, 
                                     'score': score
                                 }
                                 )
 
-            #with open(self.corpus_embedding_path,'r') as f:
-            #    for item in tqdm(f,desc="Load Corpus Embeddings"):
-            #        corpus=item.strip('\n').split('\t')
-            #        id,embedding=corpus[0],eval(corpus[1])
-            #       corpus_ids.append(id)
-                    #corpus_embeddings.append(torch.tensor(embedding).to(self.accelerator.device))
-            #        corpus_embeddings.append(embedding)
-            
-            #for corpus_start_idx in trange(0, len(corpus_ids), self.corpus_chunk_size, desc='Calculate Query-Corpus Score', disable=False):
-            #    corpus_end_idx = min(corpus_start_idx + self.corpus_chunk_size, len(corpus_ids))
-            #    sub_corpus_embeddings = torch.tensor(corpus_embeddings[corpus_start_idx:corpus_end_idx]).to(self.accelerator.device)
-
-            #    for name, score_function in self.score_functions.items():
-            #        pair_scores = score_function(query_embeddings, sub_corpus_embeddings)
-
-                    #Get top-k values
-            #        pair_scores_top_k_values, pair_scores_top_k_idx = torch.topk(pair_scores, min(max_k, len(pair_scores[0])), dim=1, largest=True, sorted=True)
-            #        pair_scores_top_k_values = pair_scores_top_k_values.cpu().tolist()
-            #        pair_scores_top_k_idx = pair_scores_top_k_idx.cpu().tolist()
-
-            #        for query_itr in range(len(query_embeddings)):
-            #            for sub_corpus_id, score in zip(pair_scores_top_k_idx[query_itr], pair_scores_top_k_values[query_itr]):
-            #                queries_result_list[name][query_itr].append(
-            #                    {   'corpus_id': corpus_ids[sub_corpus_id], 
-            #                        'score': score
-            #                    }
-            #                    )
-            #Compute scores
-            scores = {name: self.compute_metrics(queries_result_list[name]) for name in self.score_functions}
-
+            test_scores = {name: self.compute_metrics(test_queries_result_list[name],'test') for name in self.score_functions}
             #Output
             for name in self.score_function_names:
                 logger.info("Score-Function: {}".format(name))
-                self.output_scores(scores[name])
-            # Write results to disc
+                logger.info("On test set")
+                self.output_scores(test_scores[name])
+            # Write train results 
+            
+            #return scores
+            # Write train results 
             if self.results_save_folder is not None and self.write_csv:
-                csv_path = os.path.join(self.results_save_folder, self.csv_file)
-                if not os.path.isfile(csv_path):
-                    fOut = open(csv_path, mode="w", encoding="utf-8")
-                    fOut.write(",".join(self.csv_headers))
+                test_csv_path = os.path.join(self.results_save_folder, self.test_csv_file)
+                if not os.path.isfile(test_csv_path):
+                    fOut = open(test_csv_path, mode="w", encoding="utf-8")
+                    fOut.write(",".join(self.test_csv_headers))
                     fOut.write("\n")
 
                 else:
-                    fOut = open(csv_path, mode="a", encoding="utf-8")
+                    fOut = open(test_csv_path, mode="a", encoding="utf-8")
 
                 output_data = [round,stage]
                 for name in self.score_function_names:
@@ -316,10 +255,10 @@ class InformationRetrievalEvaluator(SentenceEvaluator):
                     #    output_data.append(scores[name]['recall@k'][k])
 
                     for k in self.mrr_at_k:
-                        output_data.append(scores[name]['mrr@k'][k])
+                        output_data.append(test_scores[name]['mrr@k'][k])
 
                     for k in self.ndcg_at_k:
-                        output_data.append(scores[name]['ndcg@k'][k])
+                        output_data.append(test_scores[name]['ndcg@k'][k])
 
                     #for k in self.map_at_k:
                     #    output_data.append(scores[name]['map@k'][k])
@@ -327,13 +266,12 @@ class InformationRetrievalEvaluator(SentenceEvaluator):
                 fOut.write(",".join(map(str, output_data)))
                 fOut.write("\n")
                 fOut.close()
-            #return scores
             #return scores['ndcg@k'][10]
             #create next stage's qrels_file_path:
 
         #return None
 
-    def compute_metrics(self, queries_result_list: List[object]):
+    def compute_metrics(self, queries_result_list: List[object],mode: str):
         # Init score computation values
         num_hits_at_k = {k: 0 for k in self.accuracy_at_k}
         #precisions_at_k = {k: [] for k in self.precision_recall_at_k}
@@ -341,32 +279,22 @@ class InformationRetrievalEvaluator(SentenceEvaluator):
         MRR = {k: 0 for k in self.mrr_at_k}
         ndcg = {k: [] for k in self.ndcg_at_k}
         #AveP_at_k = {k: [] for k in self.map_at_k}
-
+        if mode =="train":
+            queries_ids=self.train_queries_ids
+            relevant_docs=self.train_relevant_docs
+            queries=self.train_queries
+        else:
+            queries_ids=self.test_queries_ids
+            relevant_docs=self.test_relevant_docs
+            queries=self.test_queries
         # Compute scores on results
         for query_itr in range(len(queries_result_list)):
-            query_id = self.queries_ids[query_itr]
+            query_id = queries_ids[query_itr]
 
             # Sort scores
             top_hits = sorted(queries_result_list[query_itr], key=lambda x: x['score'], reverse=True)
             #top_hits=queries_result_list[query_itr]
-            query_relevant_docs = self.relevant_docs[query_id]
-
-            # Accuracy@k - We count the result correct, if at least one relevant doc is accross the top-k documents
-            #for k_val in self.accuracy_at_k:
-            #    for hit in top_hits[0:k_val]:
-            #        if hit['corpus_id'] in query_relevant_docs:
-            #            num_hits_at_k[k_val] += 1
-            #            break
-
-            # Precision and Recall@k
-            #for k_val in self.precision_recall_at_k:
-            #    num_correct = 0
-            #    for hit in top_hits[0:k_val]:
-            #        if hit['corpus_id'] in query_relevant_docs:
-            #            num_correct += 1
-
-            #    precisions_at_k[k_val].append(num_correct / k_val)
-            #    recall_at_k[k_val].append(num_correct / len(query_relevant_docs))
+            query_relevant_docs = relevant_docs[query_id]
 
             # MRR@k
             for k_val in self.mrr_at_k:
@@ -410,13 +338,13 @@ class InformationRetrievalEvaluator(SentenceEvaluator):
             ndcg[k] = np.mean(ndcg[k])
 
         for k in MRR:
-            MRR[k] /= len(self.queries)
+            MRR[k] /= len(queries)
 
         #for k in AveP_at_k:
         #    AveP_at_k[k] = np.mean(AveP_at_k[k])
 
         return { 'ndcg@k': ndcg, 'mrr@k': MRR}
-        return {'accuracy@k': num_hits_at_k, 'precision@k': precisions_at_k, 'recall@k': recall_at_k, 'ndcg@k': ndcg, 'mrr@k': MRR, 'map@k': AveP_at_k}
+        #return {'accuracy@k': num_hits_at_k, 'precision@k': precisions_at_k, 'recall@k': recall_at_k, 'ndcg@k': ndcg, 'mrr@k': MRR, 'map@k': AveP_at_k}
 
 
     def output_scores(self, scores):
@@ -445,3 +373,5 @@ class InformationRetrievalEvaluator(SentenceEvaluator):
         for i in range(min(len(relevances), k)):
             dcg += relevances[i] / np.log2(i + 2)  #+2 as we start our idx at 0
         return dcg
+
+

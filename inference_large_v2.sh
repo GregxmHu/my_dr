@@ -26,7 +26,7 @@ train_topk_score_path="${project_path}/scores/${identifier}_train.tsv"
 
 accelerate launch\
  --config_file accelerate_config.yaml\
- inference.py\
+ inference_v2.py\
  --identifier $identifier\
  --cache_folder $cache_folder\
  --data_folder $data_folder\
@@ -38,8 +38,8 @@ accelerate launch\
  --train_queries_name $train_queries_name\
  --train_qrels_name $train_qrels_name\
  --corpus_name $corpus_name\
- --encode_batch_size 300\
- --corpus_chunk_size 100000\
+ --encode_batch_size 50\
+ --corpus_chunk_size 10000\
  --model_name_or_path ${model_name_or_path}\
  --pooling $pooling\
  --round $round\

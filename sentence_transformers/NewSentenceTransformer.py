@@ -743,56 +743,77 @@ class SentenceTransformer(nn.Sequential):
                 loss_model.zero_grad()
                 loss_model.train()
 
-            for _ in trange(steps_per_epoch * gradient_accumulation, desc="Iteration", smoothing=0.05, disable=not show_progress_bar):
-                for train_idx in range(num_train_objectives):
-                    loss_model = loss_models[train_idx]
-                    optimizer = optimizers[train_idx]
-                    scheduler = schedulers[train_idx]
-                    data_iterator = data_iterators[train_idx]
+            for _ in trange(math.ceil(steps_per_epoch/gradient_accumulation),desc="Iteration", smoothing=0.05, disable=not show_progress_bar):
+                for _ in range(gradient_accumulation):
+                    for train_idx in range(num_train_objectives):
+                        loss_model = loss_models[train_idx]
+                        optimizer = optimizers[train_idx]
+                        scheduler = schedulers[train_idx]
+                        data_iterator = data_iterators[train_idx]
 
-                    try:
-                        data = next(data_iterator)
-                    except StopIteration:
-                        data_iterator = iter(dataloaders[train_idx])
-                        data_iterators[train_idx] = data_iterator
-                        data = next(data_iterator)
+                        try:
+                            data = next(data_iterator)
+                        except StopIteration:
+                            data_iterator = iter(dataloaders[train_idx])
+                            data_iterators[train_idx] = data_iterator
+                            data = next(data_iterator)
 
-                    features, labels = data
+                        features, labels = data
 
-                    if use_amp:
-                        with autocast():
+                        if use_amp:
+                            with autocast():
+                                loss_value = loss_model(features, labels)
+                                loss_value=loss_value/gradient_accumulation
+
+                            scale_before_step = scaler.get_scale()
+                            accelerator.backward(scaler.scale(loss_value))
+                            #training_steps += 1
+
+                            #if training_steps % gradient_accumulation == 0:
+                            #    scaler.unscale_(optimizer)
+                            #    torch.nn.utils.clip_grad_norm_(loss_model.parameters(), max_grad_norm)
+                            #    scaler.step(optimizer)
+                            #    scaler.update()
+                            #    skip_scheduler = scaler.get_scale() != scale_before_step
+                            #    optimizer.zero_grad()
+                            #    if not skip_scheduler:
+                            #        scheduler.step()
+                            #    global_step += 1
+                        else:
                             loss_value = loss_model(features, labels)
+                            loss_value=loss_value/gradient_accumulation
+                            accelerator.backward(loss_value)
+                            #if training_steps % gradient_accumulation == 0:
+                            #    torch.nn.utils.clip_grad_norm_(loss_model.parameters(), max_grad_norm)
+                            #    optimizer.step()
+                            #    optimizer.zero_grad()
+                            #    if not skip_scheduler:
+                            #        scheduler.step()
+                            #    global_step += 1
+                            #training_steps += 1
+                if use_amp:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(loss_model.parameters(), max_grad_norm)
+                    scaler.step(optimizer)
+                    scaler.update()
+                    skip_scheduler = scaler.get_scale() != scale_before_step
+                    optimizer.zero_grad()
+                    if not skip_scheduler:
+                        scheduler.step()
 
-                        scale_before_step = scaler.get_scale()
-                        accelerator.backward(scaler.scale(loss_value))
-                        training_steps += 1
-                        scaler.unscale_(optimizer)
-                        torch.nn.utils.clip_grad_norm_(loss_model.parameters(), max_grad_norm)
-
-                        if training_steps % gradient_accumulation == 0:
-                            scaler.step(optimizer)
-                            scaler.update()
-                            skip_scheduler = scaler.get_scale() != scale_before_step
-                            optimizer.zero_grad()
-                            if not skip_scheduler:
-                                scheduler.step()
-                            global_step += 1
-                    else:
-                        loss_value = loss_model(features, labels)
-                        accelerator.backward(loss_value)
-                        torch.nn.utils.clip_grad_norm_(loss_model.parameters(), max_grad_norm)
-                        if training_steps % gradient_accumulation == 0:
-                            optimizer.step()
-                            optimizer.zero_grad()
-                            if not skip_scheduler:
-                                scheduler.step()
-                            global_step += 1
-                        training_steps += 1
-                    
-                    dist.barrier()
-                    if tb and training_steps % gradient_accumulation == 0:
-                        tb.add_scalar("loss",loss_value.item(),global_step+1)
-                    dist.barrier()
+                else:
+                    torch.nn.utils.clip_grad_norm_(loss_model.parameters(), max_grad_norm)
+                    optimizer.step()
+                    optimizer.zero_grad()
+                    if not skip_scheduler:
+                        scheduler.step()
+                        
+                global_step += 1
+                
+                dist.barrier()
+                if tb:
+                    tb.add_scalar("loss",loss_value.item(),global_step)
+                dist.barrier()
 
                 #if evaluation_steps > 0 and global_step % evaluation_steps == 0:
                 #    self._eval_during_training(evaluator, checkpoint_path, save_best_model, epoch, global_step, callback,

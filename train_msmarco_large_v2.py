@@ -154,6 +154,7 @@ parser.add_argument("--train_batch_size", default=64, type=int)
                     # these arguments are used loading or creating a model
 parser.add_argument("--use_pre_trained_model", default=False, action="store_true")
 parser.add_argument("--model_name_or_path", required=True)
+parser.add_argument("--base_model_name_or_path", required=True)
 parser.add_argument("--max_seq_length", default=300, type=int)
 parser.add_argument("--pooling", default="mean")
 parser.add_argument("--freeze", action="store_true", help="Freeze transformer")
@@ -178,7 +179,8 @@ parser.add_argument("--wandb", action="store_true")
 parser.add_argument("--wandbwatchlog", default="all", type=str) # Set e.g. to just gradients for large models
 parser.add_argument("--local_rank", type=int, default=-1)
 parser.add_argument("--bootstrap", default=False,action="store_true")
-parser.add_argument("--round", default=1,type=int)
+parser.add_argument("--round_idx", default=0,type=int)
+parser.add_argument("--stage_idx", default=0,type=int)
 args = parser.parse_args()
 
 
@@ -195,6 +197,14 @@ max_seq_length = args.max_seq_length  # Max length for passages. Increasing it, 
 ce_score_margin = args.ce_score_margin  # Margin for the CrossEncoder score between negative and positive passages
 num_negs_per_system = args.num_negs_per_system  # We used different systems to mine hard negatives. Number of hard negatives to add from each system
 num_epochs = args.epochs  # Number of epochs we want to train
+
+if args.stage_idx==0 and args.round_idx!=0:
+    previous_round_idx=args.round_idx-1
+    previous_stage_idx=1
+elif args.stage_idx==1:
+    previous_round_idx=args.round_idx
+    previous_stage_idx=0
+
 if "gpt" in model_name_or_path or "GPT" in model_name_or_path:
     accelerator = Accelerator()
 else:
@@ -215,8 +225,10 @@ print(args)
 #    wandb.config.update(args)
 
 # Load our embedding model
-if args.use_pre_trained_model:
+if args.use_pre_trained_model and args.round_idx+args.stage_idx>0:
     logging.info("use pretrained Sentence-Transformer model")
+    if args.bootstrap:
+        model_name_or_path=os.path.join(args.checkpoint_save_folder,"round{}-stage{}/".format(previous_round_idx,previous_stage_idx))
     model = SentenceTransformer(model_name_or_path,cache_folder=args.cache_folder)
     model.max_seq_length = max_seq_length
     if "gpt" in model_name_or_path or "GPT" in model_name_or_path:
@@ -241,7 +253,7 @@ if args.use_pre_trained_model:
         word_embedding_model.replace_bos = True
 else:
     logging.info("Create new Sentence-Transformer model")
-    word_embedding_model = models.Transformer(model_name_or_path, max_seq_length=max_seq_length,cache_folder=args.cache_folder)
+    word_embedding_model = models.Transformer(args.base_model_name_or_path, max_seq_length=max_seq_length,cache_folder=args.cache_folder)
     if "gpt" in model_name_or_path or "GPT" in model_name_or_path:
         word_embedding_model.tokenizer.pad_token = word_embedding_model.tokenizer.eos_token     
         tokens = ["[SOS]", "{SOS}"]
@@ -276,10 +288,15 @@ if args.freeze or args.freezenonbias:
             continue
         param.requires_grad = False
 
+qrels_path_list=[]
+qrels_dir=os.path.join(data_folder,args.identifier)
+qrels_path_list_file=os.path.join(qrels_dir,"qrels_path.tsv" )
 collection_filepath = os.path.join(data_folder, args.corpus_name)
 train_queries_filepath = os.path.join(data_folder, args.train_queries_name)
-train_qrels_filepath=os.path.join(data_folder, args.train_qrels_name)
-
+if args.round_idx==0 and args.stage_idx==0:
+    train_qrels_filepath=os.path.join(data_folder, args.train_qrels_name)
+else:
+    train_qrels_filepath=os.path.join(qrels_dir, "round{}-stage{}_".format(previous_round_idx,previous_stage_idx)+args.train_qrels_name)
 train_queries,corpus=getdata(train_queries_filepath,collection_filepath,train_qrels_filepath)
 logging.info("Train queries: {}".format(len(train_queries)))
 
@@ -288,67 +305,29 @@ train_dataset = MSMARCODataset(train_queries, corpus=corpus)
 train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=train_batch_size)
 train_loss = losses.MultipleNegativesRankingLoss(model=model)
 
-qrels_path_list=[]
-qrels_dir=os.path.join(data_folder,args.identifier)
-qrels_path_list_file=os.path.join(qrels_dir,"qrels_path.tsv" )
 #fp=open(qrels_path_list_file,'w')
 # Train the model
-if args.bootstrap:
-    for round_idx in trange(args.round,desc="Bootstrap Round", disable=not accelerator.is_main_process):
-        for stage in trange(2,desc="Stage", disable=not accelerator.is_main_process):
-            if args.log_dir is not None and accelerator.is_main_process:
-                writer = SummaryWriter(os.path.join(args.log_dir,"round{}-stage{}".format(round_idx,stage)))
-                tb = writer
-            else:
-                tb=None
-            # first fit
-            model.fit(train_objectives=[(train_dataloader, train_loss)],
-                    epochs=num_epochs,
-                    warmup_steps=args.warmup_steps,
-                    use_amp=args.use_amp,
-                    checkpoint_save_folder=args.checkpoint_save_folder,
-                    optimizer_params={'lr': args.lr},
-                    show_progress_bar=accelerator.is_main_process,
-                    steps_per_epoch=args.steps_per_epoch,
-                    accelerator=accelerator,
-                    tb=tb,
-                    round=round_idx,
-                    stage=stage
-                    )
-            # wite for new qrels to be generated
-            while (round_idx,stage) not in qrels_path_list:
-                print("******waiting new qrels to be generated by inference process...******")
-                with open(qrels_path_list_file,'r') as f:
-                    for item in f:
-                        round_num,stage_num,path=item.strip('\n').split('\t')
-                        round_num,stage_num=int(round_num),int(stage_num)
-                        if (round_num,stage_num) not in qrels_path_list:
-                            qrels_path_list.append((round_num,stage_num))
-                time.sleep(1500)
-            # use new qrels create new datasets
-            train_qrels_filepath=os.path.join(qrels_dir, "round{}-stage{}_".format(round_idx,stage)+args.train_qrels_name)
-            train_queries,corpus=getdata(train_queries_filepath,collection_filepath,train_qrels_filepath)
-            logging.info("Train queries: {}".format(len(train_queries)))
-            train_dataset = MSMARCODataset(train_queries, corpus=corpus)
-            train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=train_batch_size)
-            train_loss = losses.MultipleNegativesRankingLoss(model=model)
+if args.log_dir is not None and accelerator.is_main_process:
+    writer = SummaryWriter(os.path.join(args.log_dir,"round{}-stage{}".format(args.round_idx,args.stage_idx)))
+    tb = writer
 else:
-    if args.log_dir is not None and accelerator.is_main_process:
-        writer = SummaryWriter(os.path.join(args.log_dir,"round{}-stage{}".format(0,0)))
-        tb = writer
-    else:
-        tb=None
-    model.fit(train_objectives=[(train_dataloader, train_loss)],
-                epochs=num_epochs,
-                warmup_steps=args.warmup_steps,
-                use_amp=args.use_amp,
-                checkpoint_save_folder=args.checkpoint_save_folder,
-                optimizer_params={'lr': args.lr},
-                show_progress_bar=True,
-                steps_per_epoch=args.steps_per_epoch,
-                accelerator=accelerator,
-                tb=tb,
-                round=0,
-                stage=0
-                )
+    tb=None
+
+# first fit
+model.fit(train_objectives=[(train_dataloader, train_loss)],
+        epochs=num_epochs,
+        warmup_steps=args.warmup_steps,
+        use_amp=args.use_amp,
+        checkpoint_save_folder=args.checkpoint_save_folder,
+        optimizer_params={'lr': args.lr},gradient_accumulation=8,
+        show_progress_bar=accelerator.is_main_process,
+        steps_per_epoch=args.steps_per_epoch,
+        accelerator=accelerator,
+        tb=tb,
+        round=args.round_idx,
+        stage=args.stage_idx
+        )
+
+
+
 
